@@ -4,10 +4,6 @@
 
 const bit<16> TYPE_IPV4 = 0x800;
 
-/*************************************************************************
-*********************** H E A D E R S  ***********************************
-*************************************************************************/
-
 typedef bit<9>  egressSpec_t;
 typedef bit<48> macAddr_t;
 typedef bit<32> ip4Addr_t;
@@ -42,34 +38,35 @@ struct headers {
     ipv4_t       ipv4;
 }
 
-/*************************************************************************
-*********************** P A R S E R  ***********************************
-*************************************************************************/
-
 parser MyParser(packet_in packet,
                 out headers hdr,
                 inout metadata meta,
                 inout standard_metadata_t standard_metadata) {
 
+    /* each IPv4 thing is wrapped in Ethernet headers so the state is parse_ether 
+       by default */
+    
     state start {
-        /* TODO: add parser logic */
+        transition parse_ether;
+    }
+
+    state parse_ether {
+        packet.extract(hdr.ethernet);
+        transition select(hdr.ethernet.etherType) {
+            TYPE_IPV4: parse_ipv4;
+            default: accept;
+        }
+    }
+
+    state parse_ipv4 {
+        packet.extract(hdr.ipv4);
         transition accept;
     }
 }
 
-
-/*************************************************************************
-************   C H E C K S U M    V E R I F I C A T I O N   *************
-*************************************************************************/
-
 control MyVerifyChecksum(inout headers hdr, inout metadata meta) {
     apply {  }
 }
-
-
-/*************************************************************************
-**************  I N G R E S S   P R O C E S S I N G   *******************
-*************************************************************************/
 
 control MyIngress(inout headers hdr,
                   inout metadata meta,
@@ -79,9 +76,30 @@ control MyIngress(inout headers hdr,
     }
 
     action ipv4_forward(macAddr_t dstAddr, egressSpec_t port) {
-        /* TODO: fill out code in action body */
+        /* bu satiri aciklamaya calisirken switch'lerin portlarina bagli cihazlarin 
+        MAC adreslerini nasil ogrendigini ve nasil sakladigini arastirdim. takip eden ipv4_lpm kismi bu muammanin yanitini verecek. */
+        /* disari yonlu paketin switch'in hangi portundan ayrilmasi gerektigi ayarlanir */
+        standard_metadata.egress_spec = port;
+
+        /* paketin kaynagi artik biziz, srcAddr header'dan dstAddr olarak ayarlanir */
+        hdr.ethernet.srcAddr = hdr.ethernet.dstAddr;
+
+        /* hedef adres, bir sonraki hop'un alicisi olarak ayarlanir */
+        hdr.ethernet.dstAddr = dstAddr;
+
+        hdr.ipv4.ttl = hdr.ipv4.ttl - 1;
     }
 
+    /* burasi cokomelli: LPM "Longest Prefix Match"in kisaltmasi
+       IP yonlendirmede kullanilan bir teknik. Verilen bir IP adres icin hangi
+       (cihaz MAC'i - port) demetinin kullanilacagini seciyor.
+        
+       tablonun kendisi ise IP_prefix : (MAC, port) seklinde bir veri yapisi
+       cunku IP_prefix aslinda bir IP agini ifade ediyor (10.0.1.0/24 gibi)
+
+       biz de burada hedef IPv4 adresimizi LPM tablosundan esleyerek hangi
+       porttan cikacagimizi belirliyor ya da tabloda olmayan bir yol sayesinde
+       o paketi dropluyoruz (cunku bagli hicbir cihaz o yola sahip degil) */
     table ipv4_lpm {
         key = {
             hdr.ipv4.dstAddr: lpm;
@@ -96,26 +114,22 @@ control MyIngress(inout headers hdr,
     }
 
     apply {
-        /* TODO: fix ingress control logic
-         *  - ipv4_lpm should be applied only when IPv4 header is valid
-         */
-        ipv4_lpm.apply();
+        /* buradaki basta sihirli gorunen isValid, P4 tarafindan tanimlanan ve 
+           bir header'in duzgunce parse edilip pakette yer aldigini dogrulayan bir
+           fonksiyonmus. */
+        /* eger elimizdeki paket IPv4 paketi ise LPM tablosundaki kurallar 
+           uygulanacak. */
+        if (hdr.ipv4.isValid()) {
+            ipv4_lpm.apply();
+        }
     }
 }
-
-/*************************************************************************
-****************  E G R E S S   P R O C E S S I N G   *******************
-*************************************************************************/
 
 control MyEgress(inout headers hdr,
                  inout metadata meta,
                  inout standard_metadata_t standard_metadata) {
     apply {  }
 }
-
-/*************************************************************************
-*************   C H E C K S U M    C O M P U T A T I O N   **************
-*************************************************************************/
 
 control MyComputeChecksum(inout headers hdr, inout metadata meta) {
      apply {
@@ -137,20 +151,13 @@ control MyComputeChecksum(inout headers hdr, inout metadata meta) {
     }
 }
 
-
-/*************************************************************************
-***********************  D E P A R S E R  *******************************
-*************************************************************************/
-
 control MyDeparser(packet_out packet, in headers hdr) {
+    /* paketi aldigimiz gibi birakiyoruz :) */
     apply {
-        /* TODO: add deparser logic */
+        packet.emit(hdr.ethernet);
+        packet.emit(hdr.ipv4);
     }
 }
-
-/*************************************************************************
-***********************  S W I T C H  *******************************
-*************************************************************************/
 
 V1Switch(
 MyParser(),
